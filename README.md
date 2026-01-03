@@ -7,4 +7,4 @@ This is free version of loot analyzer. This is community project, so every impro
 
 If you have any strugles, then ask gpt. Not me, ill fk u off
 
-![screen](https://imgur.com/5c19ea59-be1d-4a7a-aa08-f74be1698387)
+![screen](https://i.imgur.com/1N2zTkn.png)
