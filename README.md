@@ -8,4 +8,4 @@ This is free version of loot analyzer. This is community project, so every impro
 
 If you have any strugles, then ask gpt. Not me, ill fk u off
 
-![screen](https://i.imgur.com/1N2zTkn.png)
+![screen](https://i.imgur.com/GV2ZxRS.png)
