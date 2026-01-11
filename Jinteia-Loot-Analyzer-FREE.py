@@ -310,6 +310,24 @@ class LootMonitorApp(tk.Tk):
 
     # -------------------- UI layout -------------------- #
 
+    def reset_session_data(self):
+        # Base data
+        self.base_yang = 0
+        self.base_items = {}
+        self.base_item_rates = {}
+        self.data_hours = 0.0
+
+        # Crafting / pass state
+        self.crafting_yang_delta = 0
+        self.crafting_item_delta.clear()
+        self.pass_applied.clear()
+        self.pass_states.clear()
+
+        # Net values
+        self.net_yang = 0
+        self.net_yang_per_hour = 0
+
+
     def reset_overlay_stats(self):
         self.net_yang = 0
         self.net_yang_per_hour = 0
@@ -793,7 +811,7 @@ class LootMonitorApp(tk.Tk):
         self.render_items()
 
     def update_yang_display(self):
-        net_yang = max(self.base_yang - self.crafting_yang_delta, 0)
+        net_yang = self.base_yang - self.crafting_yang_delta
         self.yang_label.config(text=f"{net_yang:,}")
 
 
@@ -819,6 +837,7 @@ class LootMonitorApp(tk.Tk):
         # Wipe UI data and start fresh
         self.reset_stats_ui()
         self.reset_overlay_stats()
+        self.reset_session_data()
 
         fixed_start_ts = None
         now = datetime.now()
@@ -918,7 +937,7 @@ class LootMonitorApp(tk.Tk):
         net_yang_per_hour = base_yang_per_hour - crafting_yang_per_hour
         net_yang_per_minute = base_yang_per_minute - crafting_yang_per_minute
 
-        self.net_yang = max(self.base_yang - self.crafting_yang_delta, 0)
+        self.net_yang = self.base_yang - self.crafting_yang_delta
         self.net_yang_per_hour = net_yang_per_hour
 
 
@@ -933,8 +952,11 @@ class LootMonitorApp(tk.Tk):
         )
         
         if self.mini_window and self.mini_window.winfo_exists():
-            self.mini_yang_var.set(f"Yang: {int(total_yang):,}")
-            self.mini_yang_hr_var.set(f"Yang/h: {int(yang_per_hour):,}")
+            net_yang = self.base_yang - self.crafting_yang_delta
+
+            self.mini_yang_var.set(f"Yang: {int(net_yang):,}")
+            self.mini_yang_hr_var.set(f"Yang/h: {int(self.net_yang_per_hour):,}")
+
 
 
         # Update yang displays
