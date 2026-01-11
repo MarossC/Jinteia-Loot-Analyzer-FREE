@@ -250,9 +250,96 @@ class LootMonitorApp(tk.Tk):
         self.stop_event = threading.Event()
         self.worker: Optional[LiveMonitorWorker] = None
         
+        # -------------------- Settings state -------------------- #
+        self.log_path_var = tk.StringVar(value="info_chat_loot.log")
+        self.window_minutes_var = tk.IntVar(value=60)
+        self.refresh_secs_var = tk.IntVar(value=5)
+        self.from_start_var = tk.BooleanVar(value=False)
+
+
         self.create_widgets()
 
     # -------------------- UI layout -------------------- #
+
+    def open_settings_popup(self):
+        if hasattr(self, "settings_popup") and self.settings_popup.winfo_exists():
+            self.settings_popup.lift()
+            return
+
+        self.settings_popup = tk.Toplevel(self)
+        self.settings_popup.title("⚙️ Settings")
+        self.settings_popup.geometry("600x320")
+        self.settings_popup.configure(bg=self.card_bg)
+        self.settings_popup.transient(self)
+        self.settings_popup.grab_set()
+
+        container = tk.Frame(self.settings_popup, bg=self.card_bg)
+        container.pack(fill="both", expand=True, padx=20, pady=20)
+
+        # --- Log file ---
+        row1 = tk.Frame(container, bg=self.card_bg)
+        row1.pack(fill="x", pady=8)
+
+        tk.Label(row1, text="Log File:", bg=self.card_bg, fg=self.text_color).pack(side="left")
+
+        tk.Entry(
+            row1,
+            textvariable=self.log_path_var,
+            bg="#2d3748",
+            fg=self.text_color,
+            insertbackground=self.text_color,
+            relief="flat",
+            width=40
+        ).pack(side="left", padx=10)
+
+        ttk.Button(row1, text="Browse", command=self.browse_file,
+                   style="Secondary.TButton").pack(side="left")
+
+        # --- Window / Refresh ---
+        row2 = tk.Frame(container, bg=self.card_bg)
+        row2.pack(fill="x", pady=10)
+
+        tk.Label(row2, text="Window (min):", bg=self.card_bg, fg=self.text_color).pack(side="left")
+        tk.Spinbox(
+            row2, from_=1, to=600,
+            textvariable=self.window_minutes_var,
+            bg="#2d3748", fg=self.text_color,
+            insertbackground=self.text_color,
+            relief="flat", width=8
+        ).pack(side="left", padx=10)
+
+        tk.Label(row2, text="Refresh (sec):", bg=self.card_bg, fg=self.text_color).pack(side="left", padx=(20, 0))
+        tk.Spinbox(
+            row2, from_=1, to=60,
+            textvariable=self.refresh_secs_var,
+            bg="#2d3748", fg=self.text_color,
+            insertbackground=self.text_color,
+            relief="flat", width=8
+        ).pack(side="left", padx=10)
+
+        # --- Checkbox ---
+        tk.Checkbutton(
+            container,
+            text="Read from beginning",
+            variable=self.from_start_var,
+            bg=self.card_bg,
+            fg=self.text_color,
+            selectcolor=self.card_bg,
+            activebackground=self.card_bg
+        ).pack(anchor="w", pady=10)
+
+        # --- Buttons ---
+        buttons = tk.Frame(container, bg=self.card_bg)
+        buttons.pack(fill="x", pady=(20, 0))
+
+        ttk.Button(
+            buttons,
+            text="Close",
+            style="Secondary.TButton",
+            command=self.settings_popup.destroy
+        ).pack(side="right")
+
+
 
     def create_widgets(self):
         # Create a main container with padding
@@ -263,89 +350,47 @@ class LootMonitorApp(tk.Tk):
         header_frame = ttk.Frame(main_container)
         header_frame.pack(fill="x", pady=(0, 20))
         
-        ttk.Label(header_frame, text="💰 Jinteia Loot Analyzer [AI Slop by Paysami]", style="Header.TLabel").pack(side="left")
-        ttk.Label(header_frame, text="Real-time Yang & Loot Tracker", 
-                 foreground=self.muted_text).pack(side="left", padx=(10, 0))
+        ttk.Label(
+            header_frame,
+            text="💰 Jinteia Loot Analyzer [AI Slop by Paysami]",
+            style="Header.TLabel"
+        ).pack(side="left")
+
+        ttk.Label(
+            header_frame,
+            text="Real-time Yang & Loot Tracker",
+            foreground=self.muted_text
+        ).pack(side="left", padx=(10, 0))
+
+        ttk.Button(
+            header_frame,
+            text="⚙ Settings",
+            style="Secondary.TButton",
+            command=self.open_settings_popup
+        ).pack(side="right")
         
-        # Settings Card
-        settings_card = tk.Frame(main_container, bg=self.card_bg, relief="flat", borderwidth=0)
-        settings_card.pack(fill="x", pady=(0, 20))
-        
-        # Settings header
-        settings_header = tk.Frame(settings_card, bg=self.card_bg)
-        settings_header.pack(fill="x", padx=20, pady=(15, 10))
-        tk.Label(settings_header, text="⚙️ Settings", bg=self.card_bg, fg=self.text_color,
-                font=("Segoe UI", 11, "bold")).pack(side="left")
-        
-        # Settings content
-        settings_content = tk.Frame(settings_card, bg=self.card_bg)
-        settings_content.pack(fill="x", padx=20, pady=(0, 20))
-        
-        # Row 1: Log file selection
-        row1 = tk.Frame(settings_content, bg=self.card_bg)
-        row1.pack(fill="x", pady=8)
-        
-        tk.Label(row1, text="Log File:", bg=self.card_bg, fg=self.text_color,
-                font=("Segoe UI", 10)).pack(side="left")
-        
-        self.log_path_var = tk.StringVar(value="info_chat_loot.log")
-        log_entry = tk.Entry(row1, textvariable=self.log_path_var, bg="#2d3748", fg=self.text_color,
-                           insertbackground=self.text_color, font=("Segoe UI", 10),
-                           relief="flat", width=50)
-        log_entry.pack(side="left", padx=(10, 5), pady=5)
-        
-        ttk.Button(row1, text="Browse", command=self.browse_file, 
-                  style="Secondary.TButton").pack(side="left", padx=5)
-        
-        # Row 2: Settings controls
-        row2 = tk.Frame(settings_content, bg=self.card_bg)
-        row2.pack(fill="x", pady=8)
-        
-        tk.Label(row2, text="Window:", bg=self.card_bg, fg=self.text_color,
-                font=("Segoe UI", 10)).pack(side="left")
-        self.window_minutes_var = tk.IntVar(value=60)
-        window_spin = tk.Spinbox(row2, from_=1, to=600, textvariable=self.window_minutes_var,
-                                bg="#2d3748", fg=self.text_color, insertbackground=self.text_color,
-                                font=("Segoe UI", 10), relief="flat", width=8)
-        window_spin.pack(side="left", padx=(10, 20))
-        
-        tk.Label(row2, text="minutes", bg=self.card_bg, fg=self.muted_text,
-                font=("Segoe UI", 9)).pack(side="left")
-        
-        tk.Label(row2, text="Refresh:", bg=self.card_bg, fg=self.text_color,
-                font=("Segoe UI", 10)).pack(side="left", padx=(20, 0))
-        self.refresh_secs_var = tk.IntVar(value=5)
-        refresh_spin = tk.Spinbox(row2, from_=1, to=60, textvariable=self.refresh_secs_var,
-                                 bg="#2d3748", fg=self.text_color, insertbackground=self.text_color,
-                                 font=("Segoe UI", 10), relief="flat", width=8)
-        refresh_spin.pack(side="left", padx=(10, 20))
-        
-        tk.Label(row2, text="seconds", bg=self.card_bg, fg=self.muted_text,
-                font=("Segoe UI", 9)).pack(side="left")
-        
-        # From start checkbox
-        self.from_start_var = tk.BooleanVar(value=False)
-        from_start_check = tk.Checkbutton(row2, text="Read from beginning", 
-                                         variable=self.from_start_var,
-                                         bg=self.card_bg, fg=self.text_color,
-                                         selectcolor=self.card_bg,
-                                         activebackground=self.card_bg,
-                                         activeforeground=self.text_color,
-                                         font=("Segoe UI", 10))
-        from_start_check.pack(side="left", padx=(20, 0))
-        
-        # Row 3: Control buttons
-        row3 = tk.Frame(settings_content, bg=self.card_bg)
-        row3.pack(fill="x", pady=(15, 0))
-        
-        self.start_button = ttk.Button(row3, text="▶ Start Monitoring", 
-                                      command=self.start_monitor, style="Accent.TButton")
+        # Control buttons (always visible)
+        controls = tk.Frame(main_container, bg=self.bg_color)
+        controls.pack(fill="x", pady=(0, 20))
+
+        self.start_button = ttk.Button(
+            controls,
+            text="▶ Start Monitoring",
+            command=self.start_monitor,
+            style="Accent.TButton"
+        )
         self.start_button.pack(side="left", padx=(0, 10))
-        
-        self.stop_button = ttk.Button(row3, text="⏹ Stop", 
-                                     command=self.stop_monitor, style="Secondary.TButton",
-                                     state="disabled")
+
+        self.stop_button = ttk.Button(
+            controls,
+            text="⏹ Stop",
+            command=self.stop_monitor,
+            style="Secondary.TButton",
+            state="disabled"
+        )
         self.stop_button.pack(side="left")
+
+
         
         # Stats Dashboard
         stats_card = tk.Frame(main_container, bg=self.card_bg, relief="flat", borderwidth=0)
