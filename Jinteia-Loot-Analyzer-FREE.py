@@ -242,6 +242,10 @@ class LootMonitorApp(tk.Tk):
         
         self.configure(bg=self.bg_color)
         
+        self.mini_window = None
+        self.mini_yang_var = tk.StringVar(value="Yang: 0")
+        self.mini_yang_hr_var = tk.StringVar(value="Yang/h: 0")
+
         # Configure styles
         self.style = ttk.Style(self)
         self.style.theme_use("clam")
@@ -261,6 +265,8 @@ class LootMonitorApp(tk.Tk):
         self.elapsed_hours = 0.0
         self.data_hours = 0.0
 
+        self.net_yang = 0
+        self.net_yang_per_hour = 0
 
         # Configure ttk styles
         self.style.configure("TFrame", background=self.bg_color)
@@ -295,7 +301,7 @@ class LootMonitorApp(tk.Tk):
         self.log_path_var = tk.StringVar(value="info_chat_loot.log")
         self.window_minutes_var = tk.IntVar(value=60)
         self.refresh_secs_var = tk.IntVar(value=1)
-        self.from_start_var = tk.BooleanVar(value=True)
+        self.from_start_var = tk.BooleanVar(value=False)
         self.time_preset_var = tk.StringVar(value="Custom")
 
 
@@ -303,6 +309,59 @@ class LootMonitorApp(tk.Tk):
         self.create_widgets()
 
     # -------------------- UI layout -------------------- #
+
+    def reset_overlay_stats(self):
+        self.net_yang = 0
+        self.net_yang_per_hour = 0
+    
+        if self.mini_window and self.mini_window.winfo_exists():
+            self.mini_yang_var.set("Yang: 0")
+            self.mini_yang_hr_var.set("Yang/h: 0")
+
+
+    def open_mini_window(self):
+        if self.mini_window and self.mini_window.winfo_exists():
+            return
+
+        win = tk.Toplevel(self)
+        win.title("Yang Overlay")
+        win.geometry("180x70")
+        win.resizable(False, False)
+        win.attributes("-topmost", True)
+        win.configure(bg="#1a202c")
+
+        # Remove taskbar icon (Windows-friendly)
+        win.transient(self)
+
+        # Drag support
+        def start_move(e):
+            win._x = e.x
+            win._y = e.y
+
+        def do_move(e):
+            win.geometry(f"+{e.x_root - win._x}+{e.y_root - win._y}")
+
+        win.bind("<ButtonPress-1>", start_move)
+        win.bind("<B1-Motion>", do_move)
+
+        tk.Label(
+            win,
+            textvariable=self.mini_yang_var,
+            bg="#1a202c",
+            fg="#f7fafc",
+            font=("Segoe UI", 11, "bold")
+        ).pack(anchor="w", padx=10, pady=(8, 0))
+
+        tk.Label(
+            win,
+            textvariable=self.mini_yang_hr_var,
+            bg="#1a202c",
+            fg="#a0aec0",
+            font=("Segoe UI", 9)
+        ).pack(anchor="w", padx=10)
+
+        self.mini_window = win
+
 
     def open_settings_popup(self):
         if hasattr(self, "settings_popup") and self.settings_popup.winfo_exists():
@@ -454,6 +513,16 @@ class LootMonitorApp(tk.Tk):
         )
         self.stop_button.pack(side="left")
         
+        tk.Button(
+            controls,
+            text="Mini Overlay",
+            command=self.open_mini_window,
+            bg="#2d3748",
+            fg=self.text_color,
+            relief="flat"
+        ).pack(side="left", padx=5)
+
+
         # Stats Dashboard
         stats_card = tk.Frame(main_container, bg=self.card_bg, relief="flat", borderwidth=0)
         stats_card.pack(fill="x", pady=(0, 20))
@@ -749,6 +818,7 @@ class LootMonitorApp(tk.Tk):
 
         # Wipe UI data and start fresh
         self.reset_stats_ui()
+        self.reset_overlay_stats()
 
         fixed_start_ts = None
         now = datetime.now()
@@ -848,7 +918,10 @@ class LootMonitorApp(tk.Tk):
         net_yang_per_hour = base_yang_per_hour - crafting_yang_per_hour
         net_yang_per_minute = base_yang_per_minute - crafting_yang_per_minute
 
-        
+        self.net_yang = max(self.base_yang - self.crafting_yang_delta, 0)
+        self.net_yang_per_hour = net_yang_per_hour
+
+
         # Update time info
         self.interval_label.config(
             text=f"Interval: {start.strftime('%H:%M:%S')} → {end.strftime('%H:%M:%S')}",
@@ -859,6 +932,11 @@ class LootMonitorApp(tk.Tk):
             fg=self.text_color
         )
         
+        if self.mini_window and self.mini_window.winfo_exists():
+            self.mini_yang_var.set(f"Yang: {int(total_yang):,}")
+            self.mini_yang_hr_var.set(f"Yang/h: {int(yang_per_hour):,}")
+
+
         # Update yang displays
         self.update_yang_display()
         self.yang_per_hour_label.config(text=f"{int(net_yang_per_hour):,}")
@@ -871,6 +949,10 @@ class LootMonitorApp(tk.Tk):
         # Configure row colors
         self.tree.tag_configure('evenrow', background='#2d3748', foreground=self.text_color)
         self.tree.tag_configure('oddrow', background='#374151', foreground=self.text_color)
+
+        if self.mini_window and self.mini_window.winfo_exists():
+            self.mini_yang_var.set(f"Yang: {int(self.net_yang):,}")
+            self.mini_yang_hr_var.set(f"Yang/h: {int(self.net_yang_per_hour):,}")
 
 
 
