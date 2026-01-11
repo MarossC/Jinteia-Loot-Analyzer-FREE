@@ -1,0 +1,74 @@
+{
+  "Hellish Pass": {
+    "yang": 2000000,
+    "items": {
+      "Fragment of a Pass [U-1]": 1,
+      "Fragment of a Pass [U-2]": 1,
+      "Shard": 400
+    }
+  },
+  "Ice-cold Pass": {
+    "yang": 1500000,
+    "items": {
+      "Fragment of a Pass [N-1]": 1,
+      "Fragment of a Pass [N-2]": 1,
+      "Shard": 200
+    }
+  },
+  "Grass-covered Pass": {
+    "yang": 1500000,
+    "items": {
+      "Fragment of a Pass [J-1]": 1,
+      "Fragment of a Pass [J-2]": 1,
+      "Shard": 200
+    }
+  },
+  "Charred Pass": {
+    "yang": 1500000,
+    "items": {
+      "Fragment of a Pass [R-1]": 1,
+      "Fragment of a Pass [R-2]": 1,
+      "Shard": 200
+    }
+  },
+  "Owl Pass": {
+    "yang": 2000000,
+    "items": {
+      "Piece of an Owl Pass [L]": 1,
+      "Piece of an Owl Pass [R]": 1,
+      "Shard": 500
+    }
+  },
+  "Taliko's Paradise Pass": {
+    "yang": 2000000,
+    "items": {
+      "Piece of a Papyrus [L]": 1,
+      "Piece of a Papyrus [R]": 1,
+      "Shard": 700
+    }
+  },
+  "Demonic Key": {
+    "yang": 5000000,
+    "items": {
+      "Piece of a Demonic Key [1]": 1,
+      "Piece of a Demonic Key [2]": 1,
+      "Shard": 1000
+    }
+  },
+  "Nalantir's Tooth": {
+    "yang": 7500000,
+    "items": {
+      "Broken Dragon Tooth [1]": 1,
+      "Broken Dragon Tooth [2]": 1,
+      "Shard": 1500
+    }
+  },
+  "Map to the Abandoned Fortress": {
+    "yang": 7500000,
+    "items": {
+      "Part of an Ancient Map [1]": 1,
+      "Part of an Ancient Map [2]": 1,
+      "Shard": 2000
+    }
+  }
+}

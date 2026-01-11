@@ -4,10 +4,11 @@ import os
 import re
 import threading
 import time
+import json
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from typing import Optional, Iterable, List, Deque, Dict, Tuple
-
+from datetime import datetime, timedelta
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
@@ -29,6 +30,16 @@ class LootEvent:
     @property
     def is_yang(self) -> bool:
         return self.item == "Yang"
+
+
+def load_pass_costs(path="passcost.json"):
+    if not os.path.exists(path):
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({}, f, indent=2)
+        return {}
+
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
 
 
 def parse_datetime_from_log(date_str: str, time_str: str) -> dt.datetime:
@@ -108,6 +119,7 @@ class LiveMonitorWorker(threading.Thread):
         from_start: bool,
         update_callback,
         stop_event: threading.Event,
+        fixed_start_ts: Optional[dt.datetime] = None,
     ):
         super().__init__(daemon=True)
         self.path = path
@@ -116,14 +128,27 @@ class LiveMonitorWorker(threading.Thread):
         self.from_start = from_start
         self.update_callback = update_callback
         self.stop_event = stop_event
+        self.fixed_start_ts = fixed_start_ts
 
         self.window: Deque[LootEvent] = deque()
 
+    def clear_data(self):
+        self.items.clear()
+        self.total_yang = 0
+
+
     def add_event(self, ev: LootEvent):
         self.window.append(ev)
-        cutoff = ev.ts - dt.timedelta(minutes=self.window_minutes)
-        while self.window and self.window[0].ts < cutoff:
-            self.window.popleft()
+
+        if self.fixed_start_ts:
+            # Calendar-based cutoff (Today / This Week)
+            while self.window and self.window[0].ts < self.fixed_start_ts:
+                self.window.popleft()
+        else:
+            # Rolling window
+            cutoff = ev.ts - dt.timedelta(minutes=self.window_minutes)
+            while self.window and self.window[0].ts < cutoff:
+                self.window.popleft()
 
     def compute_stats_from_window(self) -> Optional[Dict]:
         if not self.window:
@@ -221,6 +246,22 @@ class LootMonitorApp(tk.Tk):
         self.style = ttk.Style(self)
         self.style.theme_use("clam")
         
+        self.pass_costs = load_pass_costs()
+        self.pass_states = {}
+        self.pass_applied = set()
+
+        self.base_yang = 0
+        self.crafting_yang_delta = 0
+
+        self.base_items = {}  
+        self.crafting_item_delta = defaultdict(int) 
+
+        self.base_item_rates = {}  
+        self.session_start_time = None
+        self.elapsed_hours = 0.0
+        self.data_hours = 0.0
+
+
         # Configure ttk styles
         self.style.configure("TFrame", background=self.bg_color)
         self.style.configure("TLabelframe", background=self.bg_color, relief="flat", borderwidth=0)
@@ -249,12 +290,14 @@ class LootMonitorApp(tk.Tk):
         
         self.stop_event = threading.Event()
         self.worker: Optional[LiveMonitorWorker] = None
-        
+
         # -------------------- Settings state -------------------- #
         self.log_path_var = tk.StringVar(value="info_chat_loot.log")
         self.window_minutes_var = tk.IntVar(value=60)
-        self.refresh_secs_var = tk.IntVar(value=5)
-        self.from_start_var = tk.BooleanVar(value=False)
+        self.refresh_secs_var = tk.IntVar(value=1)
+        self.from_start_var = tk.BooleanVar(value=True)
+        self.time_preset_var = tk.StringVar(value="Custom")
+
 
 
         self.create_widgets()
@@ -295,18 +338,39 @@ class LootMonitorApp(tk.Tk):
         ttk.Button(row1, text="Browse", command=self.browse_file,
                    style="Secondary.TButton").pack(side="left")
 
-        # --- Window / Refresh ---
+        # --- Time Presets ---
+        preset_frame = tk.LabelFrame(
+            container,
+            text="Time Range",
+            bg=self.card_bg,
+            fg=self.text_color
+        )
+        preset_frame.pack(fill="x", pady=10)
+
+        for label in ["1h", "Today", "This Week", "Custom"]:
+            ttk.Radiobutton(
+                preset_frame,
+                text=label,
+                value=label,
+                variable=self.time_preset_var,
+                command=self.apply_time_preset
+            ).pack(side="left", padx=8)
+
+        # --- Window (Custom Minutes) ---
         row2 = tk.Frame(container, bg=self.card_bg)
         row2.pack(fill="x", pady=10)
 
         tk.Label(row2, text="Window (min):", bg=self.card_bg, fg=self.text_color).pack(side="left")
-        tk.Spinbox(
-            row2, from_=1, to=600,
+
+        self.window_minutes_entry = tk.Spinbox(
+            row2, from_=1, to=10080,
             textvariable=self.window_minutes_var,
             bg="#2d3748", fg=self.text_color,
             insertbackground=self.text_color,
             relief="flat", width=8
-        ).pack(side="left", padx=10)
+        )
+        self.window_minutes_entry.pack(side="left", padx=10)
+
 
         tk.Label(row2, text="Refresh (sec):", bg=self.card_bg, fg=self.text_color).pack(side="left", padx=(20, 0))
         tk.Spinbox(
@@ -389,8 +453,6 @@ class LootMonitorApp(tk.Tk):
             state="disabled"
         )
         self.stop_button.pack(side="left")
-
-
         
         # Stats Dashboard
         stats_card = tk.Frame(main_container, bg=self.card_bg, relief="flat", borderwidth=0)
@@ -464,17 +526,22 @@ class LootMonitorApp(tk.Tk):
         tree_container = tk.Frame(loot_card, bg=self.card_bg)
         tree_container.pack(fill="both", expand=True, padx=20, pady=(0, 20))
         
-        columns = ("item", "quantity", "per_hour")
+        columns = ("item", "source", "quantity", "per_hour")
         self.tree = ttk.Treeview(tree_container, columns=columns, show="headings", height=12)
         
         # Configure columns
         self.tree.heading("item", text="Item Name", anchor="w")
+        self.tree.heading("source", text="Source")
         self.tree.heading("quantity", text="Quantity", anchor="center")
         self.tree.heading("per_hour", text="Quantity / Hour", anchor="center")
-        
+
+
         self.tree.column("item", width=400, anchor="w")
+        self.tree.column("source", width=120, anchor="center")
         self.tree.column("quantity", width=150, anchor="center")
         self.tree.column("per_hour", width=150, anchor="center")
+
+        self.tree.bind("<ButtonRelease-1>", self.on_tree_click)
         
         # Scrollbars
         vsb = ttk.Scrollbar(tree_container, orient="vertical", command=self.tree.yview)
@@ -489,6 +556,9 @@ class LootMonitorApp(tk.Tk):
         tree_container.grid_rowconfigure(0, weight=1)
         tree_container.grid_columnconfigure(0, weight=1)
         
+        self.tree.tag_configure("negative", foreground="#d32f2f")
+
+
         # Footer
         footer = tk.Frame(main_container, bg=self.bg_color)
         footer.pack(fill="x", pady=(20, 0))
@@ -496,6 +566,58 @@ class LootMonitorApp(tk.Tk):
                 bg=self.bg_color, fg=self.muted_text, font=("Segoe UI", 9)).pack()
 
     # -------------------- UI helpers -------------------- #
+
+    def render_items(self):
+        """Render items using base_items - crafting_item_delta"""
+
+        self.tree.delete(*self.tree.get_children())
+    
+        items_list = sorted(
+            self.base_items.items(),
+            key=lambda x: x[1],
+            reverse=True
+        )
+    
+        for idx, (name, qty) in enumerate(items_list):
+            tag = 'evenrow' if idx % 2 == 0 else 'oddrow'
+    
+            adjusted_qty = qty - self.crafting_item_delta.get(name, 0)
+
+            base_per_hour = self.base_item_rates.get(name, 0)
+            crafted_qty = self.crafting_item_delta.get(name, 0)
+
+            if self.data_hours > 0:
+                net_per_hour = base_per_hour - (crafted_qty / self.data_hours)
+            else:
+                net_per_hour = base_per_hour
+    
+            source = ""
+            if name in self.pass_costs:
+                source = self.pass_states.get(name, "Crafted")
+
+                if name not in self.pass_states:
+                    self.pass_states[name] = "Crafted"
+
+                    # 🔥 APPLY DEFAULT CRAFT COST ON FIRST SEEN
+                    self.apply_pass_adjustment(name, "Crafted")
+    
+            tags = [tag]
+            if adjusted_qty < 0:
+                tags.append("negative")
+    
+            self.tree.insert(
+                "",
+                "end",
+                values=(
+                    name,
+                    source,
+                    f"{adjusted_qty:,}",
+                    f"{int(net_per_hour):,}"
+                ),
+                tags=tuple(tags)
+            )
+    
+
 
     def reset_stats_ui(self):
         """Clear stats and item list for a fresh start."""
@@ -507,6 +629,104 @@ class LootMonitorApp(tk.Tk):
         self.tree.delete(*self.tree.get_children())
 
     # -------------------- UI callbacks -------------------- #
+
+    def on_tree_click(self, event):
+        region = self.tree.identify("region", event.x, event.y)
+        if region != "cell":
+            return
+
+        row_id = self.tree.identify_row(event.y)
+        column = self.tree.identify_column(event.x)
+
+        # Source column is #2
+        if not row_id or column != "#2":
+            return
+
+        values = list(self.tree.item(row_id, "values"))
+        item_name = values[0]
+
+        if item_name not in self.pass_costs:
+            return
+
+        current = self.pass_states.get(item_name, "Dropped")
+        new_state = "Crafted" if current == "Dropped" else "Dropped"
+        self.pass_states[item_name] = new_state
+
+        # 🔥 THIS WAS MISSING
+        values[1] = new_state
+        self.tree.item(row_id, values=values)
+
+        self.apply_pass_adjustment(item_name, new_state)
+    
+    def apply_time_preset(self):
+        preset = self.time_preset_var.get()
+        now = datetime.now()
+    
+        if preset == "1h":
+            self.window_minutes_var.set(60)
+            self.window_minutes_entry.config(state="disabled")
+    
+        elif preset == "Today":
+            start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            minutes = int((now - start_of_day).total_seconds() / 60)
+            self.window_minutes_var.set(max(minutes, 1))
+            self.window_minutes_entry.config(state="disabled")
+    
+        elif preset == "This Week":
+            # Monday = 0
+            start_of_week = now - timedelta(days=now.weekday())
+            start_of_week = start_of_week.replace(hour=0, minute=0, second=0, microsecond=0)
+            minutes = int((now - start_of_week).total_seconds() / 60)
+            self.window_minutes_var.set(max(minutes, 1))
+            self.window_minutes_entry.config(state="disabled")
+    
+        elif preset == "Custom":
+            self.window_minutes_entry.config(state="normal")
+    
+
+
+    def apply_pass_adjustment(self, pass_name, new_state):
+        cost = self.pass_costs.get(pass_name)
+        if not cost:
+            return
+
+        # How many passes are owned (from log)
+        owned_qty = self.base_items.get(pass_name, 0)
+        if owned_qty <= 0:
+            return
+
+        currently_applied = pass_name in self.pass_applied
+
+        # ---- Crafted → apply total cost once ----
+        if new_state == "Crafted" and not currently_applied:
+            self.pass_applied.add(pass_name)
+
+            total_yang_cost = cost["yang"] * owned_qty
+            self.crafting_yang_delta += total_yang_cost
+
+            for item, qty in cost.get("items", {}).items():
+                self.crafting_item_delta[item] += qty * owned_qty
+
+        # ---- Dropped → revert total cost once ----
+        elif new_state == "Dropped" and currently_applied:
+            self.pass_applied.remove(pass_name)
+
+            total_yang_cost = cost["yang"] * owned_qty
+            self.crafting_yang_delta -= total_yang_cost
+
+            for item, qty in cost.get("items", {}).items():
+                self.crafting_item_delta[item] -= qty * owned_qty
+
+        else:
+            return  # no-op
+
+        self.update_yang_display()
+        self.render_items()
+
+    def update_yang_display(self):
+        net_yang = max(self.base_yang - self.crafting_yang_delta, 0)
+        self.yang_label.config(text=f"{net_yang:,}")
+
 
     def browse_file(self):
         filename = filedialog.askopenfilename(
@@ -521,12 +741,26 @@ class LootMonitorApp(tk.Tk):
             return
 
         path = self.log_path_var.get().strip()
-        if not path:
-            messagebox.showerror("Error", "Please select a log file.")
+
+        # 🔴 If path missing OR file does not exist → open file browser
+        if not path or not os.path.isfile(path):
+            self.browse_file()
             return
 
         # Wipe UI data and start fresh
         self.reset_stats_ui()
+
+        fixed_start_ts = None
+        now = datetime.now()
+
+        preset = self.time_preset_var.get()
+        if preset == "Today":
+            fixed_start_ts = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        elif preset == "This Week":
+            fixed_start_ts = now - timedelta(days=now.weekday())
+            fixed_start_ts = fixed_start_ts.replace(hour=0, minute=0, second=0, microsecond=0)
+
 
         window_minutes = self.window_minutes_var.get()
         refresh_secs = self.refresh_secs_var.get()
@@ -540,7 +774,9 @@ class LootMonitorApp(tk.Tk):
             from_start=from_start,
             update_callback=self.schedule_update_stats,
             stop_event=self.stop_event,
+            fixed_start_ts=fixed_start_ts,
         )
+        self.session_start_time = time.time()
         self.worker.start()
 
         self.start_button.config(state="disabled")
@@ -571,6 +807,10 @@ class LootMonitorApp(tk.Tk):
         self.after(0, self.update_stats, stats)
 
     def update_stats(self, stats: Dict):
+        if self.session_start_time:
+            self.elapsed_hours = (time.time() - self.session_start_time) / 3600
+        else:
+            self.elapsed_hours = 0
         if "error" in stats:
             messagebox.showerror("Error", stats["error"])
             self.stop_monitor()
@@ -580,15 +820,34 @@ class LootMonitorApp(tk.Tk):
         end = stats["end"]
         hours = stats["hours"]
         minutes = stats["minutes"]
+        self.data_hours = hours if hours > 0 else 0
         total_yang = stats["total_yang"]
         yang_per_hour = stats["yang_per_hour"]
         yang_per_minute = stats["yang_per_minute"]
         items_list = stats["items"]
+        self.base_items = {name: qty for name, qty, _ in items_list}
+        self.base_item_rates = {name: per_hour for name, _, per_hour in items_list}
 
-        # Format yang with thousands separator
-        yang_formatted = f"{total_yang:,}"
-        yang_ph_formatted = f"{yang_per_hour:,}"
-        yang_pm_formatted = f"{yang_per_minute:,}"
+        # Store base yang from log
+        self.base_yang = total_yang
+
+        # ---------------- NET YANG RATE CALCULATION ----------------
+
+        elapsed_hours = hours if hours > 0 else 1e-6
+        elapsed_minutes = minutes if minutes > 0 else 1e-6
+
+        # Base (loot-only) rates
+        base_yang_per_hour = self.base_yang / elapsed_hours
+        base_yang_per_minute = self.base_yang / elapsed_minutes
+
+        # Crafting amortized over session time
+        crafting_yang_per_hour = self.crafting_yang_delta / elapsed_hours
+        crafting_yang_per_minute = self.crafting_yang_delta / elapsed_minutes
+
+        # Net rates
+        net_yang_per_hour = base_yang_per_hour - crafting_yang_per_hour
+        net_yang_per_minute = base_yang_per_minute - crafting_yang_per_minute
+
         
         # Update time info
         self.interval_label.config(
@@ -600,31 +859,19 @@ class LootMonitorApp(tk.Tk):
             fg=self.text_color
         )
         
-        # Update yang stats
-        self.yang_label.config(text=yang_formatted)
-        self.yang_per_hour_label.config(text=yang_ph_formatted)
-        self.yang_per_minute_label.config(text=yang_pm_formatted)
+        # Update yang displays
+        self.update_yang_display()
+        self.yang_per_hour_label.config(text=f"{int(net_yang_per_hour):,}")
+        self.yang_per_minute_label.config(text=f"{int(net_yang_per_minute):,}")
 
-        # Update items tree
-        self.tree.delete(*self.tree.get_children())
-        for idx, (name, qty, per_hour) in enumerate(items_list):
-            # Alternate row colors
-            tag = 'evenrow' if idx % 2 == 0 else 'oddrow'
-            
-            self.tree.insert(
-                "",
-                "end",
-                values=(
-                    name,
-                    f"{qty:,}",
-                    f"{per_hour:,}",
-                ),
-                tags=(tag,)
-            )
-        
+
+        # Render items using base + delta
+        self.render_items()
+
         # Configure row colors
         self.tree.tag_configure('evenrow', background='#2d3748', foreground=self.text_color)
         self.tree.tag_configure('oddrow', background='#374151', foreground=self.text_color)
+
 
 
 def main():
