@@ -1164,6 +1164,12 @@ class LootMonitorApp(tk.Tk):
         self.reset_stats_ui()
         self.reset_overlay_stats()
         self.reset_session_data()
+        self.dungeon_runs.clear()
+        self.total_dungeon_runs = 0
+        
+        # Clear dungeon UI blocks
+        for child in self.dungeon_blocks.winfo_children():
+            child.destroy()
 
         fixed_start_ts = None
         now = datetime.now()
