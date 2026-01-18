@@ -4,7 +4,6 @@ import os
 import re
 import threading
 import time
-import json
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from typing import Optional, Iterable, List, Deque, Dict, Tuple
@@ -15,6 +14,93 @@ from tkinter import ttk, messagebox, filedialog
 # ---------------------------------------------------------------------------
 # Parsing and data structures
 # ---------------------------------------------------------------------------
+
+DUNGEON_CHESTS = {
+    "Razador's Chest": "Razador",
+    "Nemere's Chest": "Nemere",
+    "Jotun Thrym's Chest": "Jotun",
+    "Hellgates Chest": "Blue Death",
+
+    # add more as needed
+}
+
+
+PASS_COSTS = {
+    "Hellish Pass": {
+        "yang": 2_000_000,
+        "items": {
+            "Fragment of a Pass [U-1]": 1,
+            "Fragment of a Pass [U-2]": 1,
+            "Shard": 400
+        }
+    },
+    "Ice-cold Pass": {
+        "yang": 1_500_000,
+        "items": {
+            "Fragment of a Pass [N-1]": 1,
+            "Fragment of a Pass [N-2]": 1,
+            "Shard": 200
+        }
+    },
+    "Grass-covered Pass": {
+        "yang": 1_500_000,
+        "items": {
+            "Fragment of a Pass [J-1]": 1,
+            "Fragment of a Pass [J-2]": 1,
+            "Shard": 200
+        }
+    },
+    "Charred Pass": {
+        "yang": 1_500_000,
+        "items": {
+            "Fragment of a Pass [R-1]": 1,
+            "Fragment of a Pass [R-2]": 1,
+            "Shard": 200
+        }
+    },
+    "Owl Pass": {
+        "yang": 2_000_000,
+        "items": {
+            "Piece of an Owl Pass [L]": 1,
+            "Piece of an Owl Pass [R]": 1,
+            "Shard": 500
+        }
+    },
+    "Taliko's Paradise Pass": {
+        "yang": 2_000_000,
+        "items": {
+            "Piece of a Papyrus [L]": 1,
+            "Piece of a Papyrus [R]": 1,
+            "Shard": 700
+        }
+    },
+    "Demonic Key": {
+        "yang": 5_000_000,
+        "items": {
+            "Piece of a Demonic Key [1]": 1,
+            "Piece of a Demonic Key [2]": 1,
+            "Shard": 1000
+        }
+    },
+    "Nalantir's Tooth": {
+        "yang": 7_500_000,
+        "items": {
+            "Broken Dragon Tooth [1]": 1,
+            "Broken Dragon Tooth [2]": 1,
+            "Shard": 1500
+        }
+    },
+    "Map to the Abandoned Fortress": {
+        "yang": 7_500_000,
+        "items": {
+            "Part of an Ancient Map [1]": 1,
+            "Part of an Ancient Map [2]": 1,
+            "Shard": 2000
+        }
+    }
+}
+
+
 
 LOG_LINE_RE = re.compile(
     r"\[(\d{2}/\d{2}/\d{2})\] \[(\d{2}:\d{2}:\d{2})\]: You receive (\d+) (.+?)\."
@@ -30,17 +116,6 @@ class LootEvent:
     @property
     def is_yang(self) -> bool:
         return self.item == "Yang"
-
-
-def load_pass_costs(path="passcost.json"):
-    if not os.path.exists(path):
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump({}, f, indent=2)
-        return {}
-
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
-
 
 def parse_datetime_from_log(date_str: str, time_str: str) -> dt.datetime:
     """Parse date/time from the log format: 24/11/25 00:29:29."""
@@ -120,6 +195,7 @@ class LiveMonitorWorker(threading.Thread):
         update_callback,
         stop_event: threading.Event,
         fixed_start_ts: Optional[dt.datetime] = None,
+        unlimited: bool = False,   # ✅ ADD
     ):
         super().__init__(daemon=True)
         self.path = path
@@ -129,6 +205,8 @@ class LiveMonitorWorker(threading.Thread):
         self.update_callback = update_callback
         self.stop_event = stop_event
         self.fixed_start_ts = fixed_start_ts
+        self.unlimited = unlimited
+
 
         self.window: Deque[LootEvent] = deque()
 
@@ -140,12 +218,14 @@ class LiveMonitorWorker(threading.Thread):
     def add_event(self, ev: LootEvent):
         self.window.append(ev)
 
+        # 🔥 Alltime mode → never trim
+        if self.unlimited:
+            return
+
         if self.fixed_start_ts:
-            # Calendar-based cutoff (Today / This Week)
             while self.window and self.window[0].ts < self.fixed_start_ts:
                 self.window.popleft()
         else:
-            # Rolling window
             cutoff = ev.ts - dt.timedelta(minutes=self.window_minutes)
             while self.window and self.window[0].ts < cutoff:
                 self.window.popleft()
@@ -250,7 +330,7 @@ class LootMonitorApp(tk.Tk):
         self.style = ttk.Style(self)
         self.style.theme_use("clam")
         
-        self.pass_costs = load_pass_costs()
+        self.pass_costs = PASS_COSTS
         self.pass_states = {}
         self.pass_applied = set()
 
@@ -267,6 +347,10 @@ class LootMonitorApp(tk.Tk):
 
         self.net_yang = 0
         self.net_yang_per_hour = 0
+
+        self.dungeon_runs = {}      # dungeon_name -> count
+        self.total_dungeon_runs = 0
+
 
         # Configure ttk styles
         self.style.configure("TFrame", background=self.bg_color)
@@ -310,6 +394,186 @@ class LootMonitorApp(tk.Tk):
 
     # -------------------- UI layout -------------------- #
 
+    def create_time_preset_button(self, parent, text, value):
+        btn = tk.Button(
+            parent,
+            text=text,
+            relief="flat",
+            padx=12,
+            pady=4,
+            font=("Segoe UI", 9, "bold"),
+            bg="#1f2a3a",
+            fg="#cbd5e1",
+            activebackground="#334155",
+            activeforeground="#ffffff",
+            cursor="hand2",
+            command=lambda: self.set_time_preset(value)
+        )
+        btn.pack(side="left", padx=4)
+        return btn
+    
+
+    def create_dungeon_block(self, parent, text, value, bg, fg="#ffffff"):
+        block = tk.Frame(
+            parent,
+            bg=bg,
+            highlightthickness=1,
+            highlightbackground="#000000"
+        )
+
+        tk.Label(
+            block,
+            text=text,
+            bg=bg,
+            fg=fg,
+            font=("Segoe UI", 9, "bold")
+        ).pack(side="left", padx=(8, 4), pady=6)
+
+        tk.Label(
+            block,
+            text=str(value),
+            bg=bg,
+            fg=fg,
+            font=("Segoe UI", 10, "bold")
+        ).pack(side="left", padx=(0, 8), pady=6)
+
+        return block
+
+
+    def get_last_seen_pass(self):
+        for name in reversed(list(self.base_items.keys())):
+            if name in self.pass_states:
+                return name
+        return None
+    
+    def increment_last_pass_dropped(self):
+        name = self.get_last_seen_pass()
+        if not name:
+            return
+
+        state = self.pass_states.get(name)
+        if not state:
+            return
+
+        if state["crafted"] <= 0:
+            return  # nothing left to convert
+
+        state["dropped"] += 1
+        state["crafted"] -= 1
+
+        self.recalc_crafting_deltas_from_passes()
+        self.update_stats(self.last_stats)
+
+
+    def open_pass_count_editor(self, name):
+        state = self.pass_states.get(name)
+        if not state:
+            return
+
+        win = tk.Toplevel(self)
+        win.title(name)
+        win.resizable(False, False)
+
+        tk.Label(win, text=f"Total owned: {state['total']}").pack(padx=10, pady=5)
+
+        dropped_var = tk.IntVar(value=state["dropped"])
+
+        frame = tk.Frame(win)
+        frame.pack(padx=10, pady=5)
+
+        tk.Label(frame, text="Dropped:").pack(side="left")
+        tk.Entry(frame, textvariable=dropped_var, width=6).pack(side="left")
+
+        def apply():
+            dropped = dropped_var.get()
+            if dropped < 0 or dropped > state["total"]:
+                return
+
+            state["dropped"] = dropped
+            state["crafted"] = state["total"] - dropped
+
+            self.recalc_crafting_deltas_from_passes()
+            self.update_stats(self.last_stats)
+            win.destroy()
+
+        tk.Button(win, text="Apply", command=apply).pack(pady=8)
+
+
+    def on_tree_right_click(self, event):
+        row_id = self.tree.identify_row(event.y)
+        if not row_id:
+            return
+
+        values = self.tree.item(row_id, "values")
+        if not values:
+            return
+
+        name = values[0]
+        if name not in self.pass_states:
+            return
+
+        menu = tk.Menu(self, tearoff=0)
+        menu.add_command(
+            label="All Crafted",
+            command=lambda: self.set_pass_all_crafted(name)
+        )
+        menu.add_command(
+            label="All Dropped",
+            command=lambda: self.set_pass_all_dropped(name)
+        )
+
+        menu.add_separator()
+        menu.add_command(
+            label="Custom…",
+            command=lambda: self.open_pass_count_editor(name)
+        )
+
+        menu.tk_popup(event.x_root, event.y_root)
+
+
+    def recalc_crafting_deltas_from_passes(self):
+        self.crafting_yang_delta = 0
+        self.crafting_item_delta.clear()
+
+        for name, state in self.pass_states.items():
+            crafted = state["crafted"]
+            if crafted <= 0:
+                continue
+
+            cost = self.pass_costs.get(name)
+            if not cost:
+                continue
+
+            self.crafting_yang_delta += crafted * cost["yang"]
+
+            for item, qty in cost.get("items", {}).items():
+                self.crafting_item_delta[item] += crafted * qty
+
+    def set_pass_all_crafted(self, name):
+        state = self.pass_states.get(name)
+        if not state:
+            return
+
+        state["crafted"] = state["total"]
+        state["dropped"] = 0
+
+        self.recalc_crafting_deltas_from_passes()
+        self.update_stats(self.last_stats)
+
+
+    def set_pass_all_dropped(self, name):
+        state = self.pass_states.get(name)
+        if not state:
+            return
+
+        state["crafted"] = 0
+        state["dropped"] = state["total"]
+
+        self.recalc_crafting_deltas_from_passes()
+        self.update_stats(self.last_stats)
+
+
+
     def reset_session_data(self):
         # Base data
         self.base_yang = 0
@@ -339,17 +603,20 @@ class LootMonitorApp(tk.Tk):
 
     def open_mini_window(self):
         if self.mini_window and self.mini_window.winfo_exists():
+            self.mini_window.destroy()
+            self.mini_window = None
             return
 
         win = tk.Toplevel(self)
         win.title("Yang Overlay")
-        win.geometry("180x70")
+        #win.geometry("180x110") #test
         win.resizable(False, False)
         win.attributes("-topmost", True)
+        win.overrideredirect(True)
+        win.attributes("-toolwindow", True)
         win.configure(bg="#1a202c")
 
-        # Remove taskbar icon (Windows-friendly)
-        win.transient(self)
+
 
         # Drag support
         def start_move(e):
@@ -377,6 +644,19 @@ class LootMonitorApp(tk.Tk):
             fg="#a0aec0",
             font=("Segoe UI", 9)
         ).pack(anchor="w", padx=10)
+
+        tk.Button(
+            win,
+            text="+1 Dropped",
+            command=self.increment_last_pass_dropped,
+            bg="#374151",
+            fg="#f87171",
+            activebackground="#4b5563",
+            activeforeground="#fecaca",
+            relief="flat",
+            font=("Segoe UI", 8, "bold"),
+            cursor="hand2"
+        ).pack(fill="x", padx=10, pady=(6, 10))
 
         self.mini_window = win
 
@@ -424,14 +704,28 @@ class LootMonitorApp(tk.Tk):
         )
         preset_frame.pack(fill="x", pady=10)
 
-        for label in ["1h", "Today", "This Week", "Custom"]:
-            ttk.Radiobutton(
-                preset_frame,
-                text=label,
-                value=label,
-                variable=self.time_preset_var,
-                command=self.apply_time_preset
-            ).pack(side="left", padx=8)
+        preset_bar = tk.Frame(preset_frame, bg=self.bg_color)
+        preset_bar.pack(fill="x", padx=10, pady=8)
+
+        self.preset_buttons = {}
+
+        self.preset_buttons["1h"] = self.create_time_preset_button(
+            preset_bar, "1h", "1h"
+        )
+        self.preset_buttons["today"] = self.create_time_preset_button(
+            preset_bar, "Today", "today"
+        )
+        self.preset_buttons["this_week"] = self.create_time_preset_button(
+            preset_bar, "This Week", "this_week"
+        )
+        self.preset_buttons["alltime"] = self.create_time_preset_button(
+            preset_bar, "All Time", "alltime"
+        )
+        self.preset_buttons["custom"] = self.create_time_preset_button(
+            preset_bar, "Custom", "custom"
+        )
+
+
 
         # --- Window (Custom Minutes) ---
         row2 = tk.Frame(container, bg=self.card_bg)
@@ -544,6 +838,37 @@ class LootMonitorApp(tk.Tk):
         # Stats Dashboard
         stats_card = tk.Frame(main_container, bg=self.card_bg, relief="flat", borderwidth=0)
         stats_card.pack(fill="x", pady=(0, 20))
+
+        # --- Dungeon Runs Card ---
+        self.dungeon_card = tk.Frame(
+            main_container,
+            bg=self.card_bg,
+            highlightthickness=1,
+            highlightbackground="#1f2a3a"
+        )
+        self.dungeon_card.pack(fill="x", pady=(0, 20))
+
+        # Title
+        tk.Label(
+            self.dungeon_card,
+            text="Dungeon Runs",
+            bg=self.card_bg,
+            fg=self.text_color,
+            font=("Segoe UI", 11, "bold"),
+            anchor="w"
+        ).pack(fill="x", padx=14, pady=(10, 4))
+
+        # Content label (updated dynamically)
+        self.dungeon_blocks = tk.Frame(
+            self.dungeon_card,
+            bg=self.card_bg
+        )
+        self.dungeon_blocks.pack(fill="x", padx=12, pady=(0, 12))
+        self.dungeon_blocks.pack_propagate(False)
+        self.dungeon_blocks.configure(height=48)
+
+
+
         
         # Stats header
         stats_header = tk.Frame(stats_card, bg=self.card_bg)
@@ -629,6 +954,8 @@ class LootMonitorApp(tk.Tk):
         self.tree.column("per_hour", width=150, anchor="center")
 
         self.tree.bind("<ButtonRelease-1>", self.on_tree_click)
+        self.tree.bind("<Button-3>", self.on_tree_right_click)
+
         
         # Scrollbars
         vsb = ttk.Scrollbar(tree_container, orient="vertical", command=self.tree.yview)
@@ -653,6 +980,16 @@ class LootMonitorApp(tk.Tk):
                 bg=self.bg_color, fg=self.muted_text, font=("Segoe UI", 9)).pack()
 
     # -------------------- UI helpers -------------------- #
+
+    def set_time_preset(self, value):
+        self.time_preset_var.set(value)
+
+        for key, btn in self.preset_buttons.items():
+            if key == value:
+                btn.config(bg="#2563eb", fg="white")
+            else:
+                btn.config(bg="#1f2a3a", fg="#cbd5e1")
+
 
     def render_items(self):
         """Render items using base_items - crafting_item_delta"""
@@ -680,10 +1017,18 @@ class LootMonitorApp(tk.Tk):
     
             source = ""
             if name in self.pass_costs:
-                source = self.pass_states.get(name, "Crafted")
+                source = ""
+                if name in self.pass_states:
+                    ps = self.pass_states[name]
+                    source = f"Craft:{ps['crafted']} / Drop:{ps['dropped']}"
+
 
                 if name not in self.pass_states:
-                    self.pass_states[name] = "Crafted"
+                    self.pass_states[name] = {
+                        "total": qty,
+                        "crafted": qty,   # default assumption
+                        "dropped": 0
+                    }
 
                     # 🔥 APPLY DEFAULT CRAFT COST ON FIRST SEEN
                     self.apply_pass_adjustment(name, "Crafted")
@@ -717,33 +1062,8 @@ class LootMonitorApp(tk.Tk):
 
     # -------------------- UI callbacks -------------------- #
 
-    def on_tree_click(self, event):
-        region = self.tree.identify("region", event.x, event.y)
-        if region != "cell":
-            return
-
-        row_id = self.tree.identify_row(event.y)
-        column = self.tree.identify_column(event.x)
-
-        # Source column is #2
-        if not row_id or column != "#2":
-            return
-
-        values = list(self.tree.item(row_id, "values"))
-        item_name = values[0]
-
-        if item_name not in self.pass_costs:
-            return
-
-        current = self.pass_states.get(item_name, "Dropped")
-        new_state = "Crafted" if current == "Dropped" else "Dropped"
-        self.pass_states[item_name] = new_state
-
-        # 🔥 THIS WAS MISSING
-        values[1] = new_state
-        self.tree.item(row_id, values=values)
-
-        self.apply_pass_adjustment(item_name, new_state)
+    def on_tree_click(self, event): # TODO: remove
+        return
     
     def apply_time_preset(self):
         preset = self.time_preset_var.get()
@@ -766,7 +1086,13 @@ class LootMonitorApp(tk.Tk):
             minutes = int((now - start_of_week).total_seconds() / 60)
             self.window_minutes_var.set(max(minutes, 1))
             self.window_minutes_entry.config(state="disabled")
-    
+
+        elif preset == "alltime":
+            # 🔥 THIS IS THE IMPORTANT PART
+            self.window_minutes_var.set(10_000_000)  # effectively unlimited
+            self.window_minutes_entry.config(state="disabled")
+            self.from_start_var.set(True)
+
         elif preset == "Custom":
             self.window_minutes_entry.config(state="normal")
     
@@ -842,13 +1168,28 @@ class LootMonitorApp(tk.Tk):
         fixed_start_ts = None
         now = datetime.now()
 
+        unlimited = False
+
         preset = self.time_preset_var.get()
-        if preset == "Today":
+        if preset == "1h":
+            fixed_start_ts = now - timedelta(hours=1)
+
+        elif preset == "today":
             fixed_start_ts = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
-        elif preset == "This Week":
+        elif preset == "this_week":
             fixed_start_ts = now - timedelta(days=now.weekday())
             fixed_start_ts = fixed_start_ts.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        elif preset == "alltime":
+            fixed_start_ts = None
+            self.from_start_var.set(True)
+            unlimited = True
+
+        elif preset == "custom":
+            minutes = self.window_minutes_var.get()
+            fixed_start_ts = now - timedelta(minutes=minutes)
+
 
 
         window_minutes = self.window_minutes_var.get()
@@ -864,6 +1205,7 @@ class LootMonitorApp(tk.Tk):
             update_callback=self.schedule_update_stats,
             stop_event=self.stop_event,
             fixed_start_ts=fixed_start_ts,
+            unlimited=unlimited,   # ✅ ADD
         )
         self.session_start_time = time.time()
         self.worker.start()
@@ -896,6 +1238,8 @@ class LootMonitorApp(tk.Tk):
         self.after(0, self.update_stats, stats)
 
     def update_stats(self, stats: Dict):
+        self.last_stats = stats
+
         if self.session_start_time:
             self.elapsed_hours = (time.time() - self.session_start_time) / 3600
         else:
@@ -915,6 +1259,37 @@ class LootMonitorApp(tk.Tk):
         yang_per_minute = stats["yang_per_minute"]
         items_list = stats["items"]
         self.base_items = {name: qty for name, qty, _ in items_list}
+
+        # Reset dungeon counters
+        self.dungeon_runs.clear()
+        self.total_dungeon_runs = 0
+
+        for name, qty in self.base_items.items():
+            if name in DUNGEON_CHESTS:
+                dungeon = DUNGEON_CHESTS[name]
+                self.dungeon_runs[dungeon] = self.dungeon_runs.get(dungeon, 0) + qty
+                self.total_dungeon_runs += qty
+
+
+        # Initialize / update pass states
+        for name, qty in self.base_items.items():
+            if name not in self.pass_costs:
+                continue
+            
+            if name not in self.pass_states:
+                self.pass_states[name] = {
+                    "total": qty,
+                    "crafted": qty,   # default assumption
+                    "dropped": 0
+                }
+            else:
+                state = self.pass_states[name]
+                delta = qty - state["total"]
+                if delta > 0:
+                    state["total"] += delta
+                    state["crafted"] += delta
+
+
         self.base_item_rates = {name: per_hour for name, _, per_hour in items_list}
 
         # Store base yang from log
@@ -936,6 +1311,8 @@ class LootMonitorApp(tk.Tk):
         # Net rates
         net_yang_per_hour = base_yang_per_hour - crafting_yang_per_hour
         net_yang_per_minute = base_yang_per_minute - crafting_yang_per_minute
+
+        self.recalc_crafting_deltas_from_passes()
 
         self.net_yang = self.base_yang - self.crafting_yang_delta
         self.net_yang_per_hour = net_yang_per_hour
@@ -975,6 +1352,48 @@ class LootMonitorApp(tk.Tk):
         if self.mini_window and self.mini_window.winfo_exists():
             self.mini_yang_var.set(f"Yang: {int(self.net_yang):,}")
             self.mini_yang_hr_var.set(f"Yang/h: {int(self.net_yang_per_hour):,}")
+
+        # --- Render dungeon run blocks ---
+        for widget in self.dungeon_blocks.winfo_children():
+            widget.destroy()
+
+        if self.total_dungeon_runs == 0:
+            self.create_dungeon_block(
+                self.dungeon_blocks,
+                "No runs",
+                "",
+                bg=self.card_bg
+            ).pack(side="left", padx=4, pady=4)
+        else:
+            # Total block (larger emphasis)
+            total_block = self.create_dungeon_block(
+                self.dungeon_blocks,
+                "Total",
+                self.total_dungeon_runs,
+                bg=self.card_bg
+            )
+            self.dungeon_blocks.pack_propagate(False)
+            total_block.pack(side="left", padx=6, pady=4)
+
+            # Individual dungeons
+            color_map = {
+                "Razador": "#7f1d1d",
+                "Nemere": "#1e3a8a",
+                "Jotun": "#14532d",
+                "Jotun Thrym": "#14532d",
+                "Blauer Tod": "#0c4a6e",
+            }
+
+            for dungeon, count in sorted(self.dungeon_runs.items()):
+                bg = color_map.get(dungeon, "#374151")
+
+                block = self.create_dungeon_block(
+                    self.dungeon_blocks,
+                    dungeon,
+                    count,
+                    bg=bg
+                )
+                block.pack(side="left", padx=6, pady=4)
 
 
 
