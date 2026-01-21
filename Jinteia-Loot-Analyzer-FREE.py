@@ -10,6 +10,8 @@ from typing import Optional, Iterable, List, Deque, Dict, Tuple
 from datetime import datetime, timedelta
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
+import csv
+
 
 # ---------------------------------------------------------------------------
 # Parsing and data structures
@@ -834,6 +836,16 @@ class LootMonitorApp(tk.Tk):
             relief="flat"
         ).pack(side="left", padx=5)
 
+        tk.Button(
+            controls,
+            text="Export CSV",
+            command=self.export_csv,
+            bg="#2d3748",
+            fg=self.text_color,
+            relief="flat"
+        ).pack(side="left", padx=5)
+
+
 
         # Stats Dashboard
         stats_card = tk.Frame(main_container, bg=self.card_bg, relief="flat", borderwidth=0)
@@ -1147,6 +1159,80 @@ class LootMonitorApp(tk.Tk):
         )
         if filename:
             self.log_path_var.set(filename)
+
+    def export_csv(self):
+        if not hasattr(self, "last_stats") or not self.last_stats:
+            messagebox.showwarning("Export", "No data to export yet.")
+            return
+    
+        filename = filedialog.asksaveasfilename(
+            title="Export CSV",
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv")]
+        )
+        if not filename:
+            return
+    
+        stats = self.last_stats
+    
+        try:
+            with open(filename, "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+    
+                # ---------------- Summary ----------------
+                writer.writerow(["SUMMARY"])
+                writer.writerow(["Interval start", stats["start"]])
+                writer.writerow(["Interval end", stats["end"]])
+                writer.writerow(["Hours", f"{stats['hours']:.2f}"])
+                writer.writerow([])
+    
+                net_yang = self.base_yang - self.crafting_yang_delta
+                writer.writerow(["Total Yang (net)", net_yang])
+                writer.writerow(["Yang / Hour", int(self.net_yang_per_hour)])
+                writer.writerow(["Yang / Minute", int(stats["yang_per_minute"])])
+                writer.writerow([])
+    
+                # ---------------- Items ----------------
+                writer.writerow(["ITEMS"])
+                writer.writerow(["Item", "Source", "Quantity", "Quantity / Hour"])
+    
+                for name, qty in self.base_items.items():
+                    adjusted_qty = qty - self.crafting_item_delta.get(name, 0)
+    
+                    base_per_hour = self.base_item_rates.get(name, 0)
+                    crafted_qty = self.crafting_item_delta.get(name, 0)
+    
+                    if self.data_hours > 0:
+                        net_per_hour = base_per_hour - (crafted_qty / self.data_hours)
+                    else:
+                        net_per_hour = base_per_hour
+    
+                    source = ""
+                    if name in self.pass_states:
+                        ps = self.pass_states[name]
+                        source = f"Craft:{ps['crafted']} / Drop:{ps['dropped']}"
+    
+                    writer.writerow([
+                        name,
+                        source,
+                        int(adjusted_qty),
+                        int(net_per_hour)
+                    ])
+    
+                writer.writerow([])
+    
+                # ---------------- Dungeons ----------------
+                writer.writerow(["DUNGEONS"])
+                writer.writerow(["Dungeon", "Runs"])
+    
+                for dungeon, count in sorted(self.dungeon_runs.items()):
+                    writer.writerow([dungeon, count])
+    
+            messagebox.showinfo("Export", "CSV exported successfully.")
+    
+        except Exception as e:
+            messagebox.showerror("Export failed", str(e))
+
 
     def start_monitor(self):
         if self.worker is not None:
