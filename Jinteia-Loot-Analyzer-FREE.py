@@ -663,6 +663,140 @@ class LootMonitorApp(tk.Tk):
         self.mini_window = win
 
 
+    def open_info_overlay(self):
+        if getattr(self, "info_window", None) is not None and self.info_window.winfo_exists():
+            self.info_window.destroy()
+            self.info_window = None
+            return
+
+        ENTRY_COLOR = "#ffffff"     # white
+        ACTIVE_COLOR = "#ffcc00"   # yellow
+
+
+        win = tk.Toplevel(self)
+        win.title("Info Overlay")
+        win.resizable(False, False)
+        win.attributes("-topmost", True)
+        win.overrideredirect(True)
+        win.attributes("-toolwindow", True)
+        win.configure(bg="#0f172a")
+
+        # Drag support
+        def start_move(e):
+            win._x = e.x
+            win._y = e.y
+
+        def do_move(e):
+            win.geometry(f"+{e.x_root - win._x}+{e.y_root - win._y}")
+
+        win.bind("<ButtonPress-1>", start_move)
+        win.bind("<B1-Motion>", do_move)
+
+        content = tk.Frame(win, bg="#0f172a")
+        content.pack(padx=10, pady=8)
+
+        def add_section(parent, title, lines):
+            # Header (non-clickable)
+            tk.Label(
+                parent,
+                text=title,
+                anchor="w",
+                justify="left",
+                bg="#0f172a",
+                fg="#ffffff",
+                font=("Segoe UI", 9, "bold")
+            ).pack(anchor="w", pady=(2, 0))
+        
+            for line in lines:
+                lbl = tk.Label(
+                    parent,
+                    text="  " + line,
+                    anchor="w",
+                    justify="left",
+                    bg="#0f172a",
+                    fg=ENTRY_COLOR,
+                    font=("Segoe UI", 8),
+                    cursor="hand2"
+                )
+                lbl.pack(anchor="w", pady=0)
+        
+                # store toggle state on the widget itself
+                lbl._active = False
+        
+                def toggle(event, label=lbl):
+                    label._active = not label._active
+                    label.config(
+                        fg=ACTIVE_COLOR if label._active else ENTRY_COLOR
+                    )
+        
+                lbl.bind("<Button-1>", toggle)
+
+
+
+
+        # --- LEFT COLUMN ---
+        left = tk.Frame(content, bg="#0f172a")
+        left.pack(side="left", padx=(0, 24), anchor="n")
+
+        add_section(left, "Kolonie1", [
+            "Owl Metin",
+            "Guruu",
+            "Babu",
+            "Kamul",
+            "Nabu",
+            "Muhan",
+            "Mabu",
+            "Safi",
+        ])
+
+        add_section(left, "Kolonie2", [
+            "Mushroom Metin",
+            "Juzu",
+            "Huma",
+            "Matu",
+            "Hamu",
+            "Fama",
+        ])
+
+
+        # --- RIGHT COLUMN ---
+        right = tk.Frame(content, bg="#0f172a")
+        right.pack(side="left", anchor="n")
+
+        add_section(right, "Old Town", [
+            "Metin of Treason"
+        ])
+
+        add_section(right, "Nephrite Bay", [
+            "Metin of Malevolence",
+        ])
+
+        add_section(right, "Gautama Cliff", [
+            "Metin of Retribution",
+        ])
+
+        add_section(right, "Thunder Mountains", [
+            "Metin of Pride",
+        ])
+
+        add_section(right, "Verwustete Lande", [
+            "Metin Jeon-Un",
+        ])
+
+        add_section(right, "Wuste", [
+            "Metin Tu-Young",
+        ])
+
+        add_section(right, "Doyyumhwan", [
+            "Metin Ma-An",
+        ])
+
+
+
+        self.info_window = win
+
+
+
     def open_settings_popup(self):
         if hasattr(self, "settings_popup") and self.settings_popup.winfo_exists():
             self.settings_popup.lift()
@@ -835,6 +969,16 @@ class LootMonitorApp(tk.Tk):
             fg=self.text_color,
             relief="flat"
         ).pack(side="left", padx=5)
+
+        tk.Button(
+            controls,
+            text="World Bounty",
+            command=self.open_info_overlay,
+            bg="#2d3748",
+            fg=self.text_color,
+            relief="flat"
+        ).pack(side="left", padx=5)
+
 
         tk.Button(
             controls,
