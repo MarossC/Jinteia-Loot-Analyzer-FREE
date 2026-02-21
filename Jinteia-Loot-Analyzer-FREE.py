@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import csv
-
+import json
 
 # ---------------------------------------------------------------------------
 # Parsing and data structures
@@ -311,7 +311,7 @@ class LootMonitorApp(tk.Tk):
     def __init__(self):
         super().__init__()
         
-        self.title("💰 Loot Monitor - By Paysami AI slop v1.1 - Download only from there: https://github.com/PaysamiKekW/Jinteia-Loot-Analyzer-FREE/")
+        self.title("💰 Loot Monitor")
         self.geometry("1000x700")
         
         # Set dark theme colors
@@ -353,6 +353,8 @@ class LootMonitorApp(tk.Tk):
         self.dungeon_runs = {}      # dungeon_name -> count
         self.total_dungeon_runs = 0
 
+        self.config_file = "loot_analyzer_config.json"
+        self.item_prices = {}  # item_name -> price per unit
 
         # Configure ttk styles
         self.style.configure("TFrame", background=self.bg_color)
@@ -391,10 +393,46 @@ class LootMonitorApp(tk.Tk):
         self.time_preset_var = tk.StringVar(value="Custom")
 
 
-
+        self.load_config()
         self.create_widgets()
 
     # -------------------- UI layout -------------------- #
+
+        # -------------------- CONFIG SAVE / LOAD --------------------
+
+    def load_config(self):
+        if not os.path.isfile(self.config_file):
+            return
+
+        try:
+            with open(self.config_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            # Settings
+            self.log_path_var.set(data.get("log_path", self.log_path_var.get()))
+            self.window_minutes_var.set(data.get("window_minutes", 60))
+            self.refresh_secs_var.set(data.get("refresh_secs", 1))
+            self.from_start_var.set(data.get("from_start", False))
+            self.time_preset_var.set(data.get("time_preset", "custom"))
+
+            # Prices
+            self.item_prices = data.get("item_prices", {})
+            print("Failed to load config:", e)
+
+
+    def save_config(self):
+        data = {
+            "log_path": self.log_path_var.get(),
+            "window_minutes": self.window_minutes_var.get(),
+            "refresh_secs": self.refresh_secs_var.get(),
+            "from_start": self.from_start_var.get(),
+            "time_preset": self.time_preset_var.get(),
+            "item_prices": self.item_prices,
+        }
+
+        try:
+            with open(self.config_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=4)
 
     def create_time_preset_button(self, parent, text, value):
         btn = tk.Button(
@@ -910,7 +948,95 @@ class LootMonitorApp(tk.Tk):
             command=self.settings_popup.destroy
         ).pack(side="right")
 
+    # -------------------- PRICE EDITOR --------------------
 
+    def open_prices_window(self):
+        if hasattr(self, "prices_window") and self.prices_window.winfo_exists():
+            self.prices_window.lift()
+            return
+
+        self.prices_window = tk.Toplevel(self)
+        self.prices_window.title("Item Prices")
+        self.prices_window.geometry("500x500")
+        self.prices_window.configure(bg=self.card_bg)
+        self.prices_window.transient(self)
+
+        container = tk.Frame(self.prices_window, bg=self.card_bg)
+        container.pack(fill="both", expand=True, padx=15, pady=15)
+
+        canvas = tk.Canvas(container, bg=self.card_bg, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
+        scroll_frame = tk.Frame(canvas, bg=self.card_bg)
+
+        scroll_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+
+        canvas.create_window((0, 0), window=scroll_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        self.price_entries = {}
+
+        all_items = sorted(self.base_items.keys())
+
+        if not all_items:
+            tk.Label(
+                scroll_frame,
+                text="No items detected yet.\nStart monitoring first.",
+                bg=self.card_bg,
+                fg=self.text_color
+            ).pack(pady=20)
+            return
+
+        for item in all_items:
+            row = tk.Frame(scroll_frame, bg=self.card_bg)
+            row.pack(fill="x", pady=3)
+
+            tk.Label(
+                row,
+                text=item,
+                bg=self.card_bg,
+                fg=self.text_color,
+                anchor="w"
+            ).pack(side="left")
+
+            var = tk.StringVar(value=str(self.item_prices.get(item, 0)))
+
+            entry = tk.Entry(
+                row,
+                textvariable=var,
+                width=12,
+                bg="#2d3748",
+                fg=self.text_color,
+                insertbackground=self.text_color,
+                relief="flat"
+            )
+            entry.pack(side="right")
+
+            self.price_entries[item] = var
+
+        ttk.Button(
+            self.prices_window,
+            text="Save Prices",
+            style="Accent.TButton",
+            command=self.save_prices
+        ).pack(pady=10)
+
+    def save_prices(self):
+        for item, var in self.price_entries.items():
+            try:
+                price = int(var.get())
+            except ValueError:
+                price = 0
+            self.item_prices[item] = price
+
+        self.save_config()
+        self.update_stats(self.last_stats)
+        self.prices_window.destroy()
 
     def create_widgets(self):
         # Create a main container with padding
@@ -923,7 +1049,7 @@ class LootMonitorApp(tk.Tk):
         
         ttk.Label(
             header_frame,
-            text="💰 Jinteia Loot Analyzer [AI Slop by Paysami]",
+            text="💰 Jinteia Loot Analyzer",
             style="Header.TLabel"
         ).pack(side="left")
 
@@ -960,6 +1086,14 @@ class LootMonitorApp(tk.Tk):
             state="disabled"
         )
         self.stop_button.pack(side="left")
+
+        self.prices_button = ttk.Button(
+        controls,
+        text="💲 Prices",
+        command=self.open_prices_window,
+        style="Secondary.TButton"
+        )
+        self.prices_button.pack(side="left", padx=10)
         
         tk.Button(
             controls,
@@ -1294,7 +1428,7 @@ class LootMonitorApp(tk.Tk):
 
     def update_yang_display(self):
         net_yang = self.base_yang - self.crafting_yang_delta
-        self.yang_label.config(text=f"{net_yang:,}")
+        self.yang_label.config(text=f"{int(self.net_yang):,}")
 
 
     def browse_file(self):
@@ -1461,6 +1595,7 @@ class LootMonitorApp(tk.Tk):
         self.stop_button.config(state="disabled")
 
     def on_close(self):
+        self.save_config()
         self.stop_monitor()
         self.destroy()
 
@@ -1474,6 +1609,10 @@ class LootMonitorApp(tk.Tk):
         self.after(0, self.update_stats, stats)
 
     def update_stats(self, stats: Dict):
+
+        if not hasattr(self, "_last_item_snapshot"):
+            self._last_item_snapshot = {}
+
         self.last_stats = stats
 
         if self.session_start_time:
@@ -1531,27 +1670,43 @@ class LootMonitorApp(tk.Tk):
         # Store base yang from log
         self.base_yang = total_yang
 
-        # ---------------- NET YANG RATE CALCULATION ----------------
+        # ---------------- NET YANG + ITEM VALUE ----------------
 
         elapsed_hours = hours if hours > 0 else 1e-6
         elapsed_minutes = minutes if minutes > 0 else 1e-6
 
-        # Base (loot-only) rates
-        base_yang_per_hour = self.base_yang / elapsed_hours
-        base_yang_per_minute = self.base_yang / elapsed_minutes
+        item_value_total = 0
 
-        # Crafting amortized over session time
-        crafting_yang_per_hour = self.crafting_yang_delta / elapsed_hours
-        crafting_yang_per_minute = self.crafting_yang_delta / elapsed_minutes
+        for name, qty in self.base_items.items():
+            adjusted_qty = qty - self.crafting_item_delta.get(name, 0)
+            price = self.item_prices.get(name, 0)
+            item_value_total += adjusted_qty * price
 
-        # Net rates
-        net_yang_per_hour = base_yang_per_hour - crafting_yang_per_hour
-        net_yang_per_minute = base_yang_per_minute - crafting_yang_per_minute
+        # FINAL NET YANG (this is what should be shown everywhere)
+        self.net_yang = (
+            self.base_yang
+            - self.crafting_yang_delta
+            + item_value_total
+        )
+
+        self.net_yang_per_hour = self.net_yang / elapsed_hours
+        net_yang_per_minute = self.net_yang / elapsed_minutes
 
         self.recalc_crafting_deltas_from_passes()
 
-        self.net_yang = self.base_yang - self.crafting_yang_delta
-        self.net_yang_per_hour = net_yang_per_hour
+        item_value_total = 0
+
+        for name, qty in self.base_items.items():
+            adjusted_qty = qty - self.crafting_item_delta.get(name, 0)
+            price = self.item_prices.get(name, 0)
+            item_value_total += adjusted_qty * price
+
+        self.net_yang = (
+            self.base_yang
+            - self.crafting_yang_delta
+            + item_value_total
+        )
+        #self.net_yang_per_hour = net_yang_per_hour
 
 
         # Update time info
@@ -1574,7 +1729,7 @@ class LootMonitorApp(tk.Tk):
 
         # Update yang displays
         self.update_yang_display()
-        self.yang_per_hour_label.config(text=f"{int(net_yang_per_hour):,}")
+        self.yang_per_hour_label.config(text=f"{int(self.net_yang_per_hour):,}")
         self.yang_per_minute_label.config(text=f"{int(net_yang_per_minute):,}")
 
 
