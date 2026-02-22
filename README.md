@@ -6,6 +6,4 @@ This is free version of loot analyzer. This is community project, so every impro
 4) Run the bat
 5) Use ingame the white box for yangs and loot to have updates in files
 
-If you have any strugles, then ask gpt. Not me, ill fk u off
-
-![screen](https://i.imgur.com/GV2ZxRS.png)
+If you do want to use loot sound, add a loot.wav file next to the script

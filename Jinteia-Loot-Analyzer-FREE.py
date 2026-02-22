@@ -12,6 +12,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import csv
 import json
+from playsound3 import playsound
 
 # ---------------------------------------------------------------------------
 # Parsing and data structures
@@ -166,7 +167,15 @@ def stats_from_events(events: Iterable[LootEvent]) -> Dict:
 
     start = events_list[0].ts
     end = events_list[-1].ts
-    elapsed_seconds = max((end - start).total_seconds(), 1)
+    
+    # Exclude AFK time (>2 min gaps)
+    elapsed_seconds = 0.0
+    for i in range(1, len(events_list)):
+        delta = (events_list[i].ts - events_list[i-1].ts).total_seconds()
+        if delta <= 120:
+            elapsed_seconds += delta
+
+    elapsed_seconds = max(elapsed_seconds, 1.0)
     hours = elapsed_seconds / 3600.0
 
     return {
@@ -245,7 +254,16 @@ class LiveMonitorWorker(threading.Thread):
 
         start = events_list[0].ts
         end = events_list[-1].ts
-        elapsed = max((end - start).total_seconds(), 1)
+        
+        # Calculate elapsed time excluding >2 min AFK gaps
+        elapsed_seconds = 0.0
+        for i in range(1, len(events_list)):
+            delta = (events_list[i].ts - events_list[i-1].ts).total_seconds()
+            if delta <= 120:  # 120 seconds = 2 minutes
+                elapsed_seconds += delta
+                
+        elapsed = max(elapsed_seconds, 1.0)
+        
         hours = elapsed / 3600.0
         minutes = elapsed / 60.0
 
@@ -355,6 +373,15 @@ class LootMonitorApp(tk.Tk):
 
         self.config_file = "loot_analyzer_config.json"
         self.item_prices = {}  # item_name -> price per unit
+    
+        # -------- NEW: Favourites, Hidden & Filters --------
+        self.collected_filter_var = tk.StringVar()
+        self.prices_filter_var = tk.StringVar()
+
+        self.favourite_items = set()
+        self.hidden_items = set()
+        self.ping_on_favourite_var = tk.BooleanVar(value=False)
+
 
         # Configure ttk styles
         self.style.configure("TFrame", background=self.bg_color)
@@ -417,6 +444,13 @@ class LootMonitorApp(tk.Tk):
 
             # Prices
             self.item_prices = data.get("item_prices", {})
+
+            self.favourite_items = set(data.get("favourite_items", []))
+            self.hidden_items = set(data.get("hidden_items", []))
+            self.ping_on_favourite_var.set(data.get("ping_on_favourite", False))
+
+
+        except Exception as e:
             print("Failed to load config:", e)
 
 
@@ -428,11 +462,16 @@ class LootMonitorApp(tk.Tk):
             "from_start": self.from_start_var.get(),
             "time_preset": self.time_preset_var.get(),
             "item_prices": self.item_prices,
+            "favourite_items": list(self.favourite_items),
+            "hidden_items": list(self.hidden_items),
+            "ping_on_favourite": self.ping_on_favourite_var.get(),
         }
 
         try:
             with open(self.config_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=4)
+        except Exception as e:
+            print("Failed to save config:", e)
 
     def create_time_preset_button(self, parent, text, value):
         btn = tk.Button(
@@ -539,6 +578,19 @@ class LootMonitorApp(tk.Tk):
         tk.Button(win, text="Apply", command=apply).pack(pady=8)
 
 
+    def toggle_hidden(self, name):
+        if name in self.hidden_items:
+            self.hidden_items.remove(name)
+        else:
+            self.hidden_items.add(name)
+            # Remove from favourites if hiding
+            if name in self.favourite_items:
+                self.favourite_items.remove(name)
+                
+        self.save_config()
+        self.render_items()
+
+
     def on_tree_right_click(self, event):
         row_id = self.tree.identify_row(event.y)
         if not row_id:
@@ -548,25 +600,30 @@ class LootMonitorApp(tk.Tk):
         if not values:
             return
 
-        name = values[0]
-        if name not in self.pass_states:
-            return
+        name = values[1] # Column 1 is the item name
 
         menu = tk.Menu(self, tearoff=0)
-        menu.add_command(
-            label="All Crafted",
-            command=lambda: self.set_pass_all_crafted(name)
-        )
-        menu.add_command(
-            label="All Dropped",
-            command=lambda: self.set_pass_all_dropped(name)
-        )
 
-        menu.add_separator()
-        menu.add_command(
-            label="Custom…",
-            command=lambda: self.open_pass_count_editor(name)
-        )
+        if name in self.hidden_items:
+            menu.add_command(label="Unhide Item", command=lambda: self.toggle_hidden(name))
+        else:
+            menu.add_command(label="Hide Item", command=lambda: self.toggle_hidden(name))
+
+        if name in self.pass_states:
+            menu.add_separator()
+            menu.add_command(
+                label="All Crafted",
+                command=lambda: self.set_pass_all_crafted(name)
+            )
+            menu.add_command(
+                label="All Dropped",
+                command=lambda: self.set_pass_all_dropped(name)
+            )
+
+            menu.add_command(
+                label="Custom…",
+                command=lambda: self.open_pass_count_editor(name)
+            )
 
         menu.tk_popup(event.x_root, event.y_root)
 
@@ -937,6 +994,16 @@ class LootMonitorApp(tk.Tk):
             activebackground=self.card_bg
         ).pack(anchor="w", pady=10)
 
+        tk.Checkbutton(
+            container,
+            text="Ping on Favourite Drop",
+            variable=self.ping_on_favourite_var,
+            bg=self.card_bg,
+            fg=self.text_color,
+            selectcolor=self.card_bg,
+            activebackground=self.card_bg
+        ).pack(anchor="w", pady=5)
+
         # --- Buttons ---
         buttons = tk.Frame(container, bg=self.card_bg)
         buttons.pack(fill="x", pady=(20, 0))
@@ -957,29 +1024,48 @@ class LootMonitorApp(tk.Tk):
 
         self.prices_window = tk.Toplevel(self)
         self.prices_window.title("Item Prices")
-        self.prices_window.geometry("500x500")
+        self.prices_window.geometry("500x550")
         self.prices_window.configure(bg=self.card_bg)
         self.prices_window.transient(self)
 
         container = tk.Frame(self.prices_window, bg=self.card_bg)
         container.pack(fill="both", expand=True, padx=15, pady=15)
 
-        canvas = tk.Canvas(container, bg=self.card_bg, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
-        scroll_frame = tk.Frame(canvas, bg=self.card_bg)
+        # Add Filter Bar
+        filter_frame = tk.Frame(container, bg=self.card_bg)
+        filter_frame.pack(fill="x", pady=(0, 10))
+        tk.Label(filter_frame, text="🔍 Search:", bg=self.card_bg, fg=self.text_color).pack(side="left")
+        
+        self.prices_filter_var.set("") # Reset search on open
+        tk.Entry(
+            filter_frame,
+            textvariable=self.prices_filter_var,
+            bg="#2d3748",
+            fg=self.text_color,
+            insertbackground=self.text_color,
+            relief="flat"
+        ).pack(side="left", fill="x", expand=True, padx=(10, 0))
+        
+        self.prices_filter_var.trace_add("write", self.filter_prices_list)
+
+        self.prices_canvas = tk.Canvas(container, bg=self.card_bg, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(container, orient="vertical", command=self.prices_canvas.yview)
+        scroll_frame = tk.Frame(self.prices_canvas, bg=self.card_bg)
+        scroll_frame.grid_columnconfigure(0, weight=1)
 
         scroll_frame.bind(
             "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+            lambda e: self.prices_canvas.configure(scrollregion=self.prices_canvas.bbox("all"))
         )
 
-        canvas.create_window((0, 0), window=scroll_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
+        self.prices_canvas.create_window((0, 0), window=scroll_frame, anchor="nw", width=450)
+        self.prices_canvas.configure(yscrollcommand=scrollbar.set)
 
-        canvas.pack(side="left", fill="both", expand=True)
+        self.prices_canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
         self.price_entries = {}
+        self.price_row_frames = {}
 
         all_items = sorted(self.base_items.keys())
 
@@ -992,9 +1078,13 @@ class LootMonitorApp(tk.Tk):
             ).pack(pady=20)
             return
 
-        for item in all_items:
+        # Render all items securely inside their grid
+        for i, item in enumerate(all_items):
             row = tk.Frame(scroll_frame, bg=self.card_bg)
-            row.pack(fill="x", pady=3)
+            row.grid(row=i, column=0, sticky="ew", pady=3)
+            row.grid_columnconfigure(0, weight=1)
+            
+            self.price_row_frames[item] = row
 
             tk.Label(
                 row,
@@ -1002,7 +1092,7 @@ class LootMonitorApp(tk.Tk):
                 bg=self.card_bg,
                 fg=self.text_color,
                 anchor="w"
-            ).pack(side="left")
+            ).grid(row=0, column=0, sticky="w")
 
             var = tk.StringVar(value=str(self.item_prices.get(item, 0)))
 
@@ -1015,7 +1105,7 @@ class LootMonitorApp(tk.Tk):
                 insertbackground=self.text_color,
                 relief="flat"
             )
-            entry.pack(side="right")
+            entry.grid(row=0, column=1, sticky="e")
 
             self.price_entries[item] = var
 
@@ -1025,6 +1115,20 @@ class LootMonitorApp(tk.Tk):
             style="Accent.TButton",
             command=self.save_prices
         ).pack(pady=10)
+
+    def filter_prices_list(self, *args):
+        if not hasattr(self, "price_row_frames"): return
+        query = self.prices_filter_var.get().lower()
+        
+        for item, row in self.price_row_frames.items():
+            if query in item.lower():
+                row.grid()
+            else:
+                row.grid_remove()
+                
+        # Update scrollregion explicitly
+        self.prices_window.update_idletasks()
+        self.prices_canvas.configure(scrollregion=self.prices_canvas.bbox("all"))
 
     def save_prices(self):
         for item, var in self.price_entries.items():
@@ -1224,20 +1328,33 @@ class LootMonitorApp(tk.Tk):
         tk.Label(loot_header, text="📦 Collected Items", bg=self.card_bg, fg=self.text_color,
                 font=("Segoe UI", 11, "bold")).pack(side="left")
         
+        tk.Entry(
+            loot_header,
+            textvariable=self.collected_filter_var,
+            width=30,
+            bg="#2d3748",
+            fg=self.text_color,
+            insertbackground=self.text_color,
+            relief="flat"
+        ).pack(side="right")
+
+        self.collected_filter_var.trace_add("write", lambda *args: self.render_items())
+
         # Treeview with custom styling
         tree_container = tk.Frame(loot_card, bg=self.card_bg)
         tree_container.pack(fill="both", expand=True, padx=20, pady=(0, 20))
         
-        columns = ("item", "source", "quantity", "per_hour")
+        columns = ("fav", "item", "source", "quantity", "per_hour")
         self.tree = ttk.Treeview(tree_container, columns=columns, show="headings", height=12)
         
         # Configure columns
-        self.tree.heading("item", text="Item Name", anchor="w")
+        self.tree.heading("fav", text="★", anchor="center")
+        self.tree.heading("item", text="Item")
         self.tree.heading("source", text="Source")
         self.tree.heading("quantity", text="Quantity", anchor="center")
         self.tree.heading("per_hour", text="Quantity / Hour", anchor="center")
 
-
+        self.tree.column("fav", width=50, anchor="center")
         self.tree.column("item", width=400, anchor="w")
         self.tree.column("source", width=120, anchor="center")
         self.tree.column("quantity", width=150, anchor="center")
@@ -1261,6 +1378,8 @@ class LootMonitorApp(tk.Tk):
         tree_container.grid_columnconfigure(0, weight=1)
         
         self.tree.tag_configure("negative", foreground="#d32f2f")
+        self.tree.tag_configure("favourite", background="#fff59d", foreground="#000000")
+        self.tree.tag_configure("hidden", foreground="#64748b")
 
 
         # Footer
@@ -1286,15 +1405,24 @@ class LootMonitorApp(tk.Tk):
 
         self.tree.delete(*self.tree.get_children())
     
+        # Sort logic: Favourites first (0), normal (1), hidden at the very bottom (2).
         items_list = sorted(
             self.base_items.items(),
-            key=lambda x: x[1],
-            reverse=True
+            key=lambda x: (
+                2 if x[0] in self.hidden_items else (0 if x[0] in self.favourite_items else 1),
+                -x[1]  # then quantity descending
+            )
         )
     
+        filter_text = self.collected_filter_var.get().lower()
+
         for idx, (name, qty) in enumerate(items_list):
+        
+            if filter_text and filter_text not in name.lower():
+                continue
+            
             tag = 'evenrow' if idx % 2 == 0 else 'oddrow'
-    
+
             adjusted_qty = qty - self.crafting_item_delta.get(name, 0)
 
             base_per_hour = self.base_item_rates.get(name, 0)
@@ -1304,41 +1432,35 @@ class LootMonitorApp(tk.Tk):
                 net_per_hour = base_per_hour - (crafted_qty / self.data_hours)
             else:
                 net_per_hour = base_per_hour
-    
+
             source = ""
             if name in self.pass_costs:
-                source = ""
                 if name in self.pass_states:
                     ps = self.pass_states[name]
                     source = f"Craft:{ps['crafted']} / Drop:{ps['dropped']}"
 
-
-                if name not in self.pass_states:
-                    self.pass_states[name] = {
-                        "total": qty,
-                        "crafted": qty,   # default assumption
-                        "dropped": 0
-                    }
-
-                    # 🔥 APPLY DEFAULT CRAFT COST ON FIRST SEEN
-                    self.apply_pass_adjustment(name, "Crafted")
-    
             tags = [tag]
+
+            if name in self.favourite_items:
+                tags.append("favourite")
+            elif name in self.hidden_items:
+                tags.append("hidden")
+
             if adjusted_qty < 0:
                 tags.append("negative")
-    
+
             self.tree.insert(
                 "",
                 "end",
                 values=(
+                    "★" if name in self.favourite_items else "",
                     name,
                     source,
                     f"{adjusted_qty:,}",
                     f"{int(net_per_hour):,}"
                 ),
                 tags=tuple(tags)
-            )
-    
+            )    
 
 
     def reset_stats_ui(self):
@@ -1352,8 +1474,37 @@ class LootMonitorApp(tk.Tk):
 
     # -------------------- UI callbacks -------------------- #
 
-    def on_tree_click(self, event): # TODO: remove
-        return
+    def toggle_favourite(self, name):
+        if name in self.favourite_items:
+            self.favourite_items.remove(name)
+        else:
+            self.favourite_items.add(name)
+            # Remove from hidden if it was marked as favourite
+            if name in self.hidden_items:
+                self.hidden_items.remove(name)
+    
+        self.save_config()
+        self.render_items()
+
+    def on_tree_click(self, event):
+        region = self.tree.identify("region", event.x, event.y)
+        if region != "cell":
+            return
+
+        column = self.tree.identify_column(event.x)
+        row_id = self.tree.identify_row(event.y)
+
+        if not row_id:
+            return
+
+        # Column #1 is the star column
+        if column == "#1":
+            values = self.tree.item(row_id, "values")
+            if not values:
+                return
+
+            name = values[1]  # item name is now column index 1
+            self.toggle_favourite(name)
     
     def apply_time_preset(self):
         preset = self.time_preset_var.get()
@@ -1472,7 +1623,7 @@ class LootMonitorApp(tk.Tk):
     
                 # ---------------- Items ----------------
                 writer.writerow(["ITEMS"])
-                writer.writerow(["Item", "Source", "Quantity", "Quantity / Hour"])
+                writer.writerow(["Fav", "Item", "Source", "Quantity", "Quantity / Hour"])
     
                 for name, qty in self.base_items.items():
                     adjusted_qty = qty - self.crafting_item_delta.get(name, 0)
@@ -1616,7 +1767,7 @@ class LootMonitorApp(tk.Tk):
         self.last_stats = stats
 
         if self.session_start_time:
-            self.elapsed_hours = (time.time() - self.session_start_time) / 3600
+            self.elapsed_hours = (time.time() - self.session_start_time)
         else:
             self.elapsed_hours = 0
         if "error" in stats:
@@ -1633,7 +1784,22 @@ class LootMonitorApp(tk.Tk):
         yang_per_hour = stats["yang_per_hour"]
         yang_per_minute = stats["yang_per_minute"]
         items_list = stats["items"]
-        self.base_items = {name: qty for name, qty, _ in items_list}
+        new_snapshot = {name: qty for name, qty, _ in items_list}
+
+        # ---- Favourite drop detection ----
+        for name, qty in new_snapshot.items():
+            old_qty = self._last_item_snapshot.get(name, 0)
+            if qty > old_qty:
+                if name in self.favourite_items and self.ping_on_favourite_var.get():
+                    # Check if 10 seconds have passed since the monitor started
+                    if self.session_start_time and (time.time() - self.session_start_time) > 3:
+                        try:
+                            playsound("loot.wav")
+                        except:
+                            pass
+                    
+        self._last_item_snapshot = new_snapshot.copy()
+        self.base_items = new_snapshot
 
         # Reset dungeon counters
         self.dungeon_runs.clear()
