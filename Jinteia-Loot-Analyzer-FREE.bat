@@ -1,1 +1,1 @@
-start pyw Jinteia-Loot-Analyzer-FREE.py
+start pyw -Xutf8 Jinteia-Loot-Analyzer-FREE.py
