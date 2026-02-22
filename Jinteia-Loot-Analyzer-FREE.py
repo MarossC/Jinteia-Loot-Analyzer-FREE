@@ -17,7 +17,7 @@ from playsound3 import playsound
 # ---------------------------------------------------------------------------
 # Parsing and data structures
 # ---------------------------------------------------------------------------
-
+ 
 DUNGEON_CHESTS = {
     "Razador's Chest": "Razador",
     "Nemere's Chest": "Nemere",
